@@ -69,6 +69,13 @@
   #stockDropzone.drag{border-color:var(--accent);background:var(--accent-dim);}
   #stockDropzone .hint{color:var(--muted);font-size:12px;margin-top:3px;}
   #stockFileInput{display:none;}
+  #komplektDropzone{
+    border:1.5px dashed var(--line);border-radius:var(--radius);padding:14px 18px;cursor:pointer;
+    transition:.15s;background:var(--panel2);flex:1;min-width:260px;
+  }
+  #komplektDropzone.drag{border-color:var(--accent);background:var(--accent-dim);}
+  #komplektDropzone .hint{color:var(--muted);font-size:12px;margin-top:3px;}
+  #komplektFileInput{display:none;}
   #fileInput{display:none;}
   .row{display:flex;gap:14px;flex-wrap:wrap;align-items:flex-end;}
   .field{display:flex;flex-direction:column;gap:5px;min-width:130px;}
@@ -275,7 +282,29 @@
   <div class="panel">
     <h2>Комплектность продаж · <span class="n" id="komplektPeriod"></span></h2>
     <div class="note" id="komplektSourceNote"></div>
-    <div class="note">Отдельная справка вне месячных вкладок. Правило: если в названии явно указано «4 шт» — это комплект на 4 шт, всё остальное считается комплектом на 2 шт.</div>
+    <div class="note">Отдельная справка вне месячных вкладок. Правило: если в названии явно указано «4 шт» — это комплект на 4 шт, всё остальное считается комплектом на 2 шт. Учитываются только артикулы L.LOCKER (начинаются на 7).</div>
+
+    <div class="upload-row" style="margin-bottom:14px;">
+      <div id="komplektDropzone">
+        <div style="font-size:13.5px;font-weight:600;">Обновить: перетащи сюда «Отчёт по товарам» (.xlsx) или нажми, чтобы выбрать</div>
+        <div class="hint">Нужны колонки «Товары», «Артикул продавца», «Продано» · период указывай вручную ниже</div>
+        <input type="file" id="komplektFileInput" accept=".xlsx,.xls">
+      </div>
+      <div style="display:flex;gap:10px;">
+        <button class="btn ghost" id="komplektResetBtn">Сбросить к исходным данным</button>
+      </div>
+    </div>
+    <div class="row" id="komplektUploadSettings" style="margin-bottom:14px;display:none;">
+      <div class="field">
+        <label>Период (для подписи)</label>
+        <input type="text" id="komplektPeriodInput" placeholder="напр. 01.07-27.07" style="width:160px;">
+      </div>
+      <div class="field" style="flex:0;">
+        <button class="btn" id="komplektCommitUpload" disabled>Сохранить в дашборд</button>
+      </div>
+    </div>
+    <div id="komplektParsePreview" style="margin-bottom:10px;font-size:12px;color:var(--muted);"></div>
+
     <div class="kpi-grid" id="komplektGrid"></div>
   </div>
 
@@ -761,9 +790,26 @@ function handleFile(file){
     try{
       const data = new Uint8Array(evt.target.result);
       const wb = XLSX.read(data, { type:'array' });
-      const sheetName = wb.SheetNames[0];
-      const raw = XLSX.utils.sheet_to_json(wb.Sheets[sheetName], { header:1, defval:null });
-      const headerRow = raw[1].map(h => (h||'').toString().trim());
+
+      // Find the sheet that actually has the funnel columns (header row is row index 1).
+      // Different exports order sheets differently (extra "Общая информация"/"Метрики"/"Фильтры"
+      // sheets can come first), so don't just assume the first sheet.
+      let sheetName = null, headerRow = null, raw = null;
+      for (const name of wb.SheetNames){
+        const candidateRaw = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
+        if (!candidateRaw[1]) continue;
+        const candidateHeader = candidateRaw[1].map(h => (h||'').toString().trim());
+        if (candidateHeader.includes('Артикул продавца') && candidateHeader.includes('Показы')){
+          sheetName = name; headerRow = candidateHeader; raw = candidateRaw;
+          break;
+        }
+      }
+      if (!sheetName){
+        document.getElementById('parsePreview').textContent =
+          'Не нашёл лист с колонками воронки продаж («Артикул продавца», «Показы» и т.д.) ни в одном листе файла. Листы в файле: ' + wb.SheetNames.join(', ');
+        document.getElementById('commitUpload').disabled = true;
+        return;
+      }
       const dataRows = raw.slice(2);
 
       const top60set = new Set(TOP60);
@@ -1037,8 +1083,115 @@ function handleStockFile(file){
 }
 
 // ---------- komplekt panel ----------
+const ORIGINAL_KOMPLEKT = SEED.komplekt;
+let KOMPLEKT = null;
+function loadKomplekt(){
+  const saved = localStorage.getItem('ll_wb_top60_komplekt_v1');
+  if (saved){ try{ return JSON.parse(saved); }catch(e){} }
+  return ORIGINAL_KOMPLEKT ? JSON.parse(JSON.stringify(ORIGINAL_KOMPLEKT)) : null;
+}
+function persistKomplekt(){ localStorage.setItem('ll_wb_top60_komplekt_v1', JSON.stringify(KOMPLEKT)); }
+function resetKomplektToOriginal(){
+  if (!confirm('Сбросить загруженные данные и вернуться к исходной комплектности?')) return;
+  KOMPLEKT = ORIGINAL_KOMPLEKT ? JSON.parse(JSON.stringify(ORIGINAL_KOMPLEKT)) : null;
+  persistKomplekt();
+  renderKomplekt();
+}
+document.getElementById('komplektResetBtn').addEventListener('click', resetKomplektToOriginal);
+
+const komplektDropzone = document.getElementById('komplektDropzone');
+const komplektFileInput = document.getElementById('komplektFileInput');
+let pendingKomplekt = null;
+komplektDropzone.addEventListener('click', () => komplektFileInput.click());
+komplektDropzone.addEventListener('dragover', e => { e.preventDefault(); komplektDropzone.classList.add('drag'); });
+komplektDropzone.addEventListener('dragleave', () => komplektDropzone.classList.remove('drag'));
+komplektDropzone.addEventListener('drop', e => { e.preventDefault(); komplektDropzone.classList.remove('drag'); if (e.dataTransfer.files.length) handleKomplektFile(e.dataTransfer.files[0]); });
+komplektFileInput.addEventListener('change', e => { if (e.target.files.length) handleKomplektFile(e.target.files[0]); });
+
+function handleKomplektFile(file){
+  const reader = new FileReader();
+  reader.onload = (evt) => {
+    try{
+      const data = new Uint8Array(evt.target.result);
+      const wb = XLSX.read(data, { type:'array' });
+
+      let sheetName = null, headerRow = null, raw = null;
+      for (const name of wb.SheetNames){
+        const candidateRaw = XLSX.utils.sheet_to_json(wb.Sheets[name], { header:1, defval:null });
+        if (!candidateRaw[1]) continue;
+        const candidateHeader = candidateRaw[1].map(h => (h||'').toString().trim());
+        if (candidateHeader.includes('Товары') && candidateHeader.includes('Продано') && candidateHeader.includes('Артикул продавца')){
+          sheetName = name; headerRow = candidateHeader; raw = candidateRaw;
+          break;
+        }
+      }
+      if (!sheetName){
+        document.getElementById('komplektParsePreview').textContent =
+          'Не нашёл лист с колонками «Товары», «Артикул продавца», «Продано». Листы в файле: ' + wb.SheetNames.join(', ');
+        document.getElementById('komplektCommitUpload').disabled = true;
+        return;
+      }
+      const idx = {};
+      headerRow.forEach((h,i) => { idx[h] = i; });
+      const dataRows = raw.slice(2);
+
+      const groups = {}; // article -> {sold, has4}
+      dataRows.forEach(rowArr => {
+        const rawArt = rowArr[idx['Артикул продавца']];
+        if (rawArt == null) return;
+        let art = String(rawArt).trim();
+        if (art.endsWith('.0')) art = art.slice(0,-2);
+        art = art.split('-')[0];
+        if (!/^7\d+$/.test(art)) return; // only L.LOCKER articles (start with 7)
+        const name = String(rowArr[idx['Товары']] || '').toLowerCase();
+        const sold = Number(rowArr[idx['Продано']]) || 0;
+        const is4 = /4\s*шт/.test(name);
+        if (!groups[art]) groups[art] = { sold: 0, is4: false };
+        groups[art].sold += sold;
+        if (is4) groups[art].is4 = true;
+      });
+
+      let set2 = { sku_count:0, sold_cards:0 }, set4 = { sku_count:0, sold_cards:0 };
+      Object.values(groups).forEach(g => {
+        if (g.is4){ set4.sku_count++; set4.sold_cards += g.sold; }
+        else { set2.sku_count++; set2.sold_cards += g.sold; }
+      });
+
+      pendingKomplekt = {
+        period: document.getElementById('komplektPeriodInput').value.trim() || KOMPLEKT.period,
+        source_note: `Отчёт по товарам (${file.name}), артикулы L.LOCKER (начинаются на 7). Правило: «4 шт» — явно из названия, всё остальное — 2 шт.`,
+        set2, set4,
+        total_sku: Object.keys(groups).length,
+        total_sold_cards: set2.sold_cards + set4.sold_cards,
+      };
+
+      document.getElementById('komplektParsePreview').innerHTML =
+        `Разобрано ✓ · SKU L.LOCKER найдено: <b style="color:var(--text)">${pendingKomplekt.total_sku}</b> · лист: <b style="color:var(--text)">${sheetName}</b> · 2 шт: ${set2.sold_cards} продано, 4 шт: ${set4.sold_cards} продано`;
+      document.getElementById('komplektUploadSettings').style.display = 'flex';
+      document.getElementById('komplektPeriodInput').value = pendingKomplekt.period;
+      document.getElementById('komplektCommitUpload').disabled = false;
+    }catch(err){
+      document.getElementById('komplektParsePreview').textContent = 'Не удалось прочитать файл: ' + err.message;
+      document.getElementById('komplektCommitUpload').disabled = true;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+document.getElementById('komplektCommitUpload').addEventListener('click', () => {
+  if (!pendingKomplekt) return;
+  pendingKomplekt.period = document.getElementById('komplektPeriodInput').value.trim() || pendingKomplekt.period;
+  KOMPLEKT = pendingKomplekt;
+  persistKomplekt();
+  pendingKomplekt = null;
+  document.getElementById('komplektParsePreview').textContent = 'Сохранено ✓';
+  document.getElementById('komplektCommitUpload').disabled = true;
+  komplektFileInput.value = '';
+  renderKomplekt();
+});
+
 function renderKomplekt(){
-  const k = SEED.komplekt;
+  const k = KOMPLEKT;
   if (!k) return;
   document.getElementById('komplektPeriod').textContent = k.period.replace('-', ' – ');
   document.getElementById('komplektSourceNote').textContent = k.source_note;
@@ -1067,6 +1220,7 @@ function render(){
 }
 
 CLUSTERS = loadClusters();
+KOMPLEKT = loadKomplekt();
 DATA = loadData();
 render();
 </script>
