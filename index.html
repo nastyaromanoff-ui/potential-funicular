@@ -222,7 +222,10 @@
         <div class="sub">L.LOCKER — воронка продаж и остатки по кластерам, без сравнения с предыдущим периодом ВБ</div>
       </div>
     </div>
-    <span class="platform-tag">Wildberries</span>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <button class="btn" id="downloadCurrentBtn" title="Сохранить весь файл со всеми загруженными обновлениями — этот файл потом заливаешь на GitHub">⬇ Скачать текущую версию</button>
+      <span class="platform-tag">Wildberries</span>
+    </div>
   </header>
 
   <div class="tabs" id="monthTabs"></div>
@@ -1384,6 +1387,36 @@ function render(){
   renderStockTable();
   renderKomplekt();
 }
+
+// Captured BEFORE any render() call — this is the pristine page source (embedded-data
+// script tag still holds the original SEED, table/charts not yet populated by JS).
+// Used by downloadCurrentVersion() as the template into which we splice live data,
+// so the downloaded file doesn't carry runtime DOM pollution (rendered rows, open
+// popups, chart canvases, etc.) — just the original page with fresh data baked in.
+const PAGE_SOURCE = document.documentElement.outerHTML;
+
+function downloadCurrentVersion(){
+  const liveData = { DATA, clusters: CLUSTERS, komplekt: KOMPLEKT, top60: TOP60 };
+  const newJson = JSON.stringify(liveData);
+  const marker = '<script id="embedded-data" type="application/json">';
+  const startIdx = PAGE_SOURCE.indexOf(marker);
+  if (startIdx === -1){ alert('Не удалось собрать файл — не нашёл блок с данными.'); return; }
+  const contentStart = startIdx + marker.length;
+  const endIdx = PAGE_SOURCE.indexOf('<\/script>', contentStart);
+  const newHtml = PAGE_SOURCE.slice(0, contentStart) + '\n' + newJson + '\n' + PAGE_SOURCE.slice(endIdx);
+
+  const blob = new Blob(['<!DOCTYPE html>\n' + newHtml], { type: 'text/html;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  const today = new Date().toISOString().slice(0,10);
+  a.href = url;
+  a.download = `wb_top60_dashboard_${today}.html`;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+document.getElementById('downloadCurrentBtn').addEventListener('click', downloadCurrentVersion);
 
 CLUSTERS = loadClusters();
 KOMPLEKT = loadKomplekt();
