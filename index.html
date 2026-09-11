@@ -263,14 +263,12 @@
         <select id="uploadTargetMonth" style="width:150px;"></select>
       </div>
       <div class="field">
-        <label>День отчёта в файле</label>
+        <label>Последний день данных в файле</label>
         <input type="number" id="reportDay" min="1" max="31" value="15">
       </div>
       <div class="field">
-        <label class="checkline" style="margin-top:8px;">
-          <input type="checkbox" id="isIncomplete">
-          Месяц не закрыт — прогнозировать
-        </label>
+        <label>Статус (определяется автоматически)</label>
+        <div id="monthStatusBadge" style="padding:8px 10px;font-size:12.5px;font-weight:600;"></div>
       </div>
       <div class="field" style="flex:0;">
         <button class="btn" id="commitUpload" disabled="">Сохранить в дашборд</button>
@@ -1029,8 +1027,21 @@ function handleFile(file){
 
       pendingRows = rows;
       populateUploadTargetMonth();
+
+      // Auto-detect the report's end date from WB's own filename convention
+      // (e.g. "...по_23-08-2026.xlsx") so the person doesn't have to read the
+      // file and type it in manually.
+      const parsedDate = parseEndDateFromFilename(file.name);
+      if (parsedDate){
+        const monthName = MONTH_ORDER[parsedDate.month - 1];
+        if (monthName) document.getElementById('uploadTargetMonth').value = monthName;
+        document.getElementById('reportDay').value = parsedDate.day;
+      }
+      updateMonthStatusBadge();
+
       document.getElementById('parsePreview').innerHTML =
-        `Найдено артикулов из ТОП 60: <b style="color:var(--text)">${rows.length}</b> из 60 · лист: <b style="color:var(--text)">${sheetName}</b> · проверь месяц назначения ниже (по умолчанию — активная вкладка)`;
+        `Найдено артикулов из ТОП 60: <b style="color:var(--text)">${rows.length}</b> из 60 · лист: <b style="color:var(--text)">${sheetName}</b>` +
+        (parsedDate ? ` · дата определена из имени файла` : ` · дату в имени файла не нашёл — проверь месяц и день ниже`);
       document.getElementById('uploadSettings').style.display = 'flex';
       document.getElementById('commitUpload').disabled = rows.length === 0;
     }catch(err){
@@ -1047,14 +1058,44 @@ function populateUploadTargetMonth(){
   sel.value = currentMonth;
 }
 
+// WB names its exports with the report's own date range baked in, e.g.
+// "24-8-2026_Воронка_продаж_с_01-08-2026_по_23-08-2026.xlsx" — pull the END
+// date straight from that instead of asking the person to read and retype it.
+function parseEndDateFromFilename(filename){
+  const m = filename.match(/по[_\-\s](\d{1,2})-(\d{1,2})-(\d{4})/i);
+  if (!m) return null;
+  return { day: parseInt(m[1],10), month: parseInt(m[2],10), year: parseInt(m[3],10) };
+}
+
+// Whether a month is "closed" or "still running" is fully determined by comparing
+// how many days of data the file covers against how many days that month actually
+// has — no manual toggle needed. This is what getProjection() already does with the
+// stored period string; here we just preview the same logic before saving.
+function updateMonthStatusBadge(){
+  const targetMonth = document.getElementById('uploadTargetMonth').value;
+  const day = parseInt(document.getElementById('reportDay').value,10) || 0;
+  const monthNum = MONTH_NUM[targetMonth];
+  const totalDays = daysInMonthNum(monthNum, 2026);
+  const badge = document.getElementById('monthStatusBadge');
+  if (!badge) return;
+  if (day >= totalDays){
+    badge.innerHTML = `<span style="color:var(--good)">✓ Закрыт</span> (${totalDays} из ${totalDays} дн.)`;
+  } else {
+    badge.innerHTML = `<span style="color:var(--accent)">● Не закрыт</span> (${day} из ${totalDays} дн.) — прогноз включится`;
+  }
+}
+document.getElementById('uploadTargetMonth').addEventListener('change', updateMonthStatusBadge);
+document.getElementById('reportDay').addEventListener('input', updateMonthStatusBadge);
+
 document.getElementById('commitUpload').addEventListener('click', () => {
   if (!pendingRows || !pendingRows.length) return;
   const targetMonth = document.getElementById('uploadTargetMonth').value;
   const reportDay = parseInt(document.getElementById('reportDay').value,10) || 1;
-  const incomplete = document.getElementById('isIncomplete').checked;
   const monthNum = MONTH_NUM[targetMonth];
   const totalDays = daysInMonthNum(monthNum, 2026);
-  const endDay = incomplete ? reportDay : totalDays;
+  // Open/closed is derived, not chosen: if the entered day covers the whole month,
+  // it's closed; otherwise it's partial and getProjection() will prorate it.
+  const endDay = Math.min(reportDay, totalDays);
   const period = `01.${String(monthNum).padStart(2,'0')}-${String(endDay).padStart(2,'0')}.${String(monthNum).padStart(2,'0')}`;
 
   const totals = {};
